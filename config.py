@@ -18,9 +18,12 @@ MODELS_DIR = PROJECT_ROOT / "models" / "detector"
 DATA_DIR = PROJECT_ROOT / "data"
 
 # --- Model Configuration ---
-PERPLEXITY_MODEL = "gpt2"  # Primary proxy model for perplexity
+PERPLEXITY_MODEL = "gpt2"  # CPU-friendly model for inference (fast)
 CLASSIFIER_MODEL = "microsoft/deberta-v3-base"  # Base model for fine-tuning
 CLASSIFIER_MAX_TOKENS = 512  # Max token length for classifier
+
+# For training on GPU, you can temporarily use larger models:
+# CLASSIFIER_MODEL = "microsoft/deberta-v3-large"  # Uncomment for GPU training
 
 # Auto-detect fine-tuned checkpoint
 _best_checkpoint = MODELS_DIR / "best"
@@ -76,14 +79,14 @@ VERDICT_MIXED_HUMAN_SENTENCE = 0.4  # Sentence below this → counted as Human
 
 # --- Training Configuration ---
 TRAINING_CONFIG = {
-    "epochs": 5,
-    "batch_size": 16,
-    "gradient_accumulation_steps": 2,  # Effective batch size = 32
+    "epochs": 8,  # Increased for GPU (was 5)
+    "batch_size": 32,  # Increased for 16GB GPU (was 16)
+    "gradient_accumulation_steps": 2,  # Effective batch size = 64
     "learning_rate": 2e-5,
     "warmup_ratio": 0.1,
     "weight_decay": 0.01,
     "max_length": 512,
-    "fp16": True,  # Auto-disabled on CPU
+    "fp16": True,  # FP16 enabled for GPU speed boost
     "output_dir": str(MODELS_DIR),
     "early_stopping_patience": 3,
     "metric_for_best_model": "f1",
@@ -105,11 +108,20 @@ DATA_SOURCES = {
     "raid": {
         "name": "liamdugan/raid",
         "description": "RAID benchmark: 11 LLMs + adversarial attacks",
-        "max_samples": 50000,
+        "max_samples": 100000,  # Increased for GPU training (was 50000)
     },
     "ai_text_pile": {
         "name": "artem9k/ai-text-detection-pile",
         "description": "Large AI text detection pile",
-        "max_samples": 50000,
+        "max_samples": 100000,  # Increased for GPU training (was 50000)
     },
 }
+
+# --- API Configuration ---
+API_HOST = os.getenv("API_HOST", "0.0.0.0")
+API_PORT = int(os.getenv("API_PORT", "8000"))
+API_WORKERS = 1  # Single worker since model is loaded in memory
+API_KEYS_FILE = PROJECT_ROOT / ".api_keys.json"
+API_MAX_FILE_SIZE_MB = 10
+API_MAX_BATCH_SIZE = 10
+API_RATE_LIMIT_PER_MINUTE = 60
