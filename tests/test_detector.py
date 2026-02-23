@@ -206,7 +206,7 @@ class TestBurstinessAnalyzer:
 
 
 class TestClassifier:
-    """Test the DeBERTa classifier."""
+    """Test the text classifier."""
 
     @pytest.fixture(scope="class")
     def classifier(self):
@@ -231,6 +231,24 @@ class TestClassifier:
         assert "ai_probability" in result
         assert "sentence_ai_probs" in result
         assert "is_fine_tuned" in result
+        assert "sentence_attributions" in result
+
+    def test_score_text_has_attributions(self, classifier):
+        """score_text should return sentence_attributions list matching sentence count."""
+        from detector.preprocessor import preprocess
+        processed = preprocess(AI_TEXT)
+        result = classifier.score_text(processed["full_text"], processed["sentences"])
+        assert len(result["sentence_attributions"]) == len(processed["sentences"])
+        for attr in result["sentence_attributions"]:
+            assert "word_attributions" in attr
+            assert "top_ai_tokens" in attr
+            assert "top_human_tokens" in attr
+
+    def test_get_model_and_tokenizer(self, classifier):
+        """get_model_and_tokenizer should return model and tokenizer."""
+        model, tokenizer = classifier.get_model_and_tokenizer()
+        assert model is not None
+        assert tokenizer is not None
 
 
 class TestEnsembleDetector:
@@ -269,6 +287,18 @@ class TestEnsembleDetector:
             assert "ppl_ai_probability" in s
             assert "classifier_prob" in s
 
+    def test_sentences_have_attributions(self, detector):
+        """Each sentence should have word_attributions, top_ai_tokens, top_human_tokens."""
+        result = detector.analyze(AI_TEXT)
+        for s in result["sentences"]:
+            assert "word_attributions" in s
+            assert "top_ai_tokens" in s
+            assert "top_human_tokens" in s
+            # word_attributions should be a list (possibly empty if model not fine-tuned)
+            assert isinstance(s["word_attributions"], list)
+            assert isinstance(s["top_ai_tokens"], list)
+            assert isinstance(s["top_human_tokens"], list)
+
     def test_confidence_tiers(self, detector):
         result = detector.analyze(AI_TEXT)
         assert result["confidence"] in ("high", "moderate", "low")
@@ -286,3 +316,53 @@ class TestEnsembleDetector:
         """When classifier is not fine-tuned, its weight should be 0."""
         if not detector.classifier.is_fine_tuned:
             assert detector.weights["classifier"] == 0.0
+
+
+class TestTokenAttributor:
+    """Test the token attribution engine."""
+
+    @pytest.fixture(scope="class")
+    def attributor(self):
+        from detector.classifier import TextClassifier
+        classifier = TextClassifier()
+        return classifier.attributor
+
+    def test_compute_attributions_structure(self, attributor):
+        """Attribution result should have expected keys."""
+        result = attributor.compute_attributions(AI_TEXT)
+        assert "word_attributions" in result
+        assert "top_ai_tokens" in result
+        assert "top_human_tokens" in result
+        assert "predicted_class" in result
+        assert "predicted_prob" in result
+
+    def test_word_attributions_are_tuples(self, attributor):
+        """word_attributions should be list of (word, score) tuples."""
+        result = attributor.compute_attributions(AI_TEXT)
+        for item in result["word_attributions"]:
+            assert len(item) == 2
+            assert isinstance(item[0], str)
+            assert isinstance(item[1], float)
+
+    def test_attributions_normalized(self, attributor):
+        """Attribution scores should be in [-1, 1] range."""
+        result = attributor.compute_attributions(AI_TEXT)
+        for _, score in result["word_attributions"]:
+            assert -1.0 <= score <= 1.0, f"Score {score} out of range [-1, 1]"
+
+    def test_predicted_prob_in_range(self, attributor):
+        """Predicted probability should be in [0, 1]."""
+        result = attributor.compute_attributions(AI_TEXT)
+        assert 0.0 <= result["predicted_prob"] <= 1.0
+
+    def test_batch_attributions(self, attributor):
+        """Batch attributions should return one result per sentence."""
+        sentences = ["This is a test sentence.", "Another sentence here."]
+        results = attributor.compute_batch_attributions(sentences)
+        assert len(results) == 2
+
+    def test_short_text_handled(self, attributor):
+        """Very short text should return empty attributions gracefully."""
+        results = attributor.compute_batch_attributions(["Hi."])
+        assert len(results) == 1
+        assert results[0]["word_attributions"] == []

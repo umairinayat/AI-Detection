@@ -246,6 +246,18 @@ class DetailedAnalyzer:
                     print(f"        → {reason['meaning']}")
                     print(f"        → Suggests: {reason['suggests']}")
 
+            # Print token attributions (GPTZero-style word indicators)
+            top_ai = sent_data.get("top_ai_tokens", [])
+            top_human = sent_data.get("top_human_tokens", [])
+            if top_ai or top_human:
+                print(f"\n   🔍 Token Attribution (GPTZero-style):")
+                if top_ai:
+                    tokens_str = ", ".join(f'"{w}" ({s:+.2f})' for w, s in top_ai)
+                    print(f"      🔴 AI indicators: {tokens_str}")
+                if top_human:
+                    tokens_str = ", ".join(f'"{w}" ({s:+.2f})' for w, s in top_human)
+                    print(f"      🟢 Human indicators: {tokens_str}")
+
             print("-"*70)
 
         print("\n" + "="*70)

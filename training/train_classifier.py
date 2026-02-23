@@ -1,8 +1,8 @@
 """
-DeBERTa fine-tuning script for AI text detection.
+Classifier fine-tuning script for AI text detection.
 
-Fine-tunes microsoft/deberta-v3-base on the prepared {text, label} dataset
-for binary classification: Human (0) vs AI (1).
+Fine-tunes roberta-base-openai-detector (or specified model) on the prepared
+{text, label} dataset for binary classification: Human (0) vs AI (1).
 
 Improvements:
   - Gradient accumulation for effective larger batch sizes
@@ -10,6 +10,8 @@ Improvements:
   - Warmup schedule
   - Better early stopping
   - Learning rate scheduling
+  - Class-weighted loss to handle imbalanced data
+  - Data sanity checks before training
 
 Usage:
     python -m training.train_classifier
@@ -19,7 +21,9 @@ Usage:
 
 import argparse
 import torch
+import torch.nn as nn
 from pathlib import Path
+from collections import Counter
 
 import numpy as np
 from datasets import load_from_disk
@@ -54,6 +58,83 @@ def compute_metrics(eval_pred):
     }
 
 
+class WeightedTrainer(Trainer):
+    """Trainer with class-weighted cross-entropy loss."""
+
+    def __init__(self, class_weights=None, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        if class_weights is not None:
+            self.class_weights = torch.tensor(class_weights, dtype=torch.float32)
+        else:
+            self.class_weights = None
+
+    def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
+        labels = inputs.pop("labels")
+        outputs = model(**inputs)
+        logits = outputs.logits
+
+        if self.class_weights is not None:
+            weight = self.class_weights.to(logits.device)
+            loss_fn = nn.CrossEntropyLoss(weight=weight)
+        else:
+            loss_fn = nn.CrossEntropyLoss()
+
+        loss = loss_fn(logits, labels)
+        return (loss, outputs) if return_outputs else loss
+
+
+def validate_dataset(ds, split_name: str):
+    """Validate a dataset before training — catch label issues early."""
+    print(f"\n--- Validating {split_name} dataset ---")
+    print(f"  Samples: {len(ds)}")
+    print(f"  Columns: {ds.column_names}")
+    print(f"  Features: {ds.features}")
+
+    # Check labels
+    labels = ds["labels"]
+    
+    # Convert tensor labels to python ints
+    if hasattr(labels, "tolist"):
+        labels_list = labels.tolist()
+    else:
+        # HuggingFace datasets might return lazy accessor
+        labels_list = [l.item() if hasattr(l, "item") else l for l in labels]
+    
+    label_counts = Counter(labels_list)
+    
+    print(f"  Label distribution: {dict(label_counts)}")
+
+    # Verify labels are 0 and 1
+    unique_labels = set(label_counts.keys())
+    if unique_labels != {0, 1}:
+        print(f"  ⚠️  WARNING: Expected labels {{0, 1}}, got {unique_labels}")
+        if not unique_labels.issubset({0, 1}):
+            raise ValueError(f"Invalid labels found: {unique_labels}. Expected only 0 and 1.")
+
+    # Check for empty texts
+    if "input_ids" in ds.column_names:
+        # After tokenization — check for all-padding sequences
+        sample_ids = ds[0]["input_ids"]
+        print(f"  Token sequence length: {len(sample_ids)}")
+
+    # Show sample
+    print(f"\n  Sample label=0 (Human):")
+    for i, row in enumerate(ds):
+        if row["labels"] == 0:
+            tokens = row.get("input_ids", [])
+            print(f"    Token count: {sum(1 for t in tokens if t != 0)}")
+            break
+
+    print(f"  Sample label=1 (AI):")
+    for i, row in enumerate(ds):
+        if row["labels"] == 1:
+            tokens = row.get("input_ids", [])
+            print(f"    Token count: {sum(1 for t in tokens if t != 0)}")
+            break
+
+    return label_counts
+
+
 def train(
     model_name: str | None = None,
     epochs: int | None = None,
@@ -78,8 +159,9 @@ def train(
     patience = tc.get("early_stopping_patience", 3)
     output_dir = str(MODEL_DIR)
 
-    # Auto-detect fp16 capability
-    use_fp16 = tc.get("fp16", True) and torch.cuda.is_available()
+    # Auto-detect mixed precision capability
+    use_fp16 = tc.get("fp16", False) and torch.cuda.is_available()
+    use_bf16 = tc.get("bf16", False) and torch.cuda.is_available()
 
     # --- Load data ---
     print(f"Loading data from {DATA_DIR}...")
@@ -87,8 +169,19 @@ def train(
     test_ds = load_from_disk(str(DATA_DIR / "test"))
     print(f"  Train: {len(train_ds)} samples | Test: {len(test_ds)} samples")
 
+    # --- Validate raw labels ---
+    print("\n--- Pre-tokenization label check ---")
+    raw_labels = train_ds["label"]
+    raw_counts = Counter(raw_labels)
+    print(f"  Raw train label distribution: {dict(raw_counts)}")
+    print(f"  Raw label type: {type(raw_labels[0])}")
+
+    # Ensure labels are plain integers
+    if hasattr(raw_labels[0], 'item'):
+        print("  Labels are tensor type, will convert to int")
+    
     # --- Tokenize ---
-    print(f"Loading tokenizer: {model_name}")
+    print(f"\nLoading tokenizer: {model_name}")
     tokenizer = AutoTokenizer.from_pretrained(model_name)
 
     def tokenize_fn(examples):
@@ -107,8 +200,33 @@ def train(
     train_ds.set_format("torch")
     test_ds.set_format("torch")
 
+    # --- Validate datasets after processing ---
+    train_label_counts = validate_dataset(train_ds, "train")
+    validate_dataset(test_ds, "test")
+
+    # Verify a single sample after format conversion
+    sample = train_ds[0]
+    print(f"\n--- Post-format check ---")
+    print(f"  labels dtype: {sample['labels'].dtype}")
+    print(f"  labels value: {sample['labels']}")
+    print(f"  input_ids shape: {sample['input_ids'].shape}")
+
+    # --- Compute class weights ---
+    n_human = train_label_counts.get(0, 0)
+    n_ai = train_label_counts.get(1, 0)
+    total = n_human + n_ai
+    if n_human > 0 and n_ai > 0:
+        # Inverse frequency weighting
+        w_human = total / (2.0 * n_human)
+        w_ai = total / (2.0 * n_ai)
+        class_weights = [w_human, w_ai]
+        print(f"\n  Class weights: Human={w_human:.4f}, AI={w_ai:.4f}")
+    else:
+        class_weights = None
+        print("\n  ⚠️  WARNING: Cannot compute class weights (missing class)")
+
     # --- Model ---
-    print(f"Loading model: {model_name}")
+    print(f"\nLoading model: {model_name}")
     model = AutoModelForSequenceClassification.from_pretrained(
         model_name,
         num_labels=2,
@@ -137,11 +255,13 @@ def train(
         logging_steps=50,
         save_total_limit=3,
         fp16=use_fp16,
+        bf16=use_bf16,
         report_to="none",
         dataloader_num_workers=0,  # Windows compatibility
     )
 
-    trainer = Trainer(
+    trainer = WeightedTrainer(
+        class_weights=class_weights,
         model=model,
         args=training_args,
         train_dataset=train_ds,
@@ -158,7 +278,10 @@ def train(
     print(f"  LR:              {learning_rate}")
     print(f"  Warmup ratio:    {warmup_ratio}")
     print(f"  FP16:            {use_fp16}")
+    print(f"  BF16:            {use_bf16}")
+    print(f"  Max length:      {max_length}")
     print(f"  Total steps:     ~{total_steps}")
+    print(f"  Class weights:   {class_weights}")
     print(f"  Device:          {'CUDA' if torch.cuda.is_available() else 'CPU'}")
     print(f"  Output:          {output_dir}")
     print(f"  Early stopping:  patience={patience} on F1")

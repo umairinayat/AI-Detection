@@ -265,12 +265,14 @@ class PerplexityEngine:
 
         Uses configurable steepness (k) from config.
         """
-        if not math.isfinite(ppl):
-            return 0.5  # Uncertain for degenerate cases
+        if not math.isfinite(ppl) or ppl <= 0:
+            return 0.0  # Degenerate PPL → treat as human (low AI confidence)
 
         threshold = config.PERPLEXITY_THRESHOLD_AI
         k = config.PERPLEXITY_SIGMOID_K
-        ai_probability = 1.0 / (1.0 + math.exp(k * (ppl - threshold)))
+        exponent = k * (ppl - threshold)
+        exponent = max(-500.0, min(500.0, exponent))  # Clamp to prevent overflow
+        ai_probability = 1.0 / (1.0 + math.exp(exponent))
         return max(0.0, min(1.0, ai_probability))
 
     def score_text(self, text: str, sentences: list[str]) -> dict:

@@ -124,6 +124,38 @@ st.markdown("""
         margin: 0.5rem 0;
         font-size: 0.9rem;
     }
+    .word-ai {
+        background-color: rgba(255, 75, 75, var(--intensity, 0.3));
+        border-radius: 3px;
+        padding: 0 2px;
+    }
+    .word-human {
+        background-color: rgba(0, 200, 83, var(--intensity, 0.3));
+        border-radius: 3px;
+        padding: 0 2px;
+    }
+    .token-indicators {
+        display: flex;
+        gap: 0.5rem;
+        flex-wrap: wrap;
+        margin-top: 0.3rem;
+    }
+    .token-ai-badge {
+        background: rgba(255, 75, 75, 0.2);
+        color: #ff6b6b;
+        padding: 2px 8px;
+        border-radius: 12px;
+        font-size: 0.75rem;
+        border: 1px solid rgba(255, 75, 75, 0.3);
+    }
+    .token-human-badge {
+        background: rgba(0, 200, 83, 0.15);
+        color: #69f0ae;
+        padding: 2px 8px;
+        border-radius: 12px;
+        font-size: 0.75rem;
+        border: 1px solid rgba(0, 200, 83, 0.3);
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -131,9 +163,16 @@ st.markdown("""
 @st.cache_resource
 def load_detector():
     """Load the ensemble detector (cached across reruns)."""
+    # Prefer the newly trained llm_detector model
+    llm_best_model = Path("models/detector/llm_detector/best")
+    if llm_best_model.exists():
+        return EnsembleDetector(classifier_path=str(llm_best_model))
+    
+    # Fallback to the older path
     best_model = Path("models/detector/best")
     if best_model.exists():
         return EnsembleDetector(classifier_path=str(best_model))
+        
     return EnsembleDetector()
 
 
@@ -205,8 +244,38 @@ def render_perplexity_chart(sentences: list[dict]):
     return fig
 
 
+def _highlight_words(text: str, word_attributions: list) -> str:
+    """Build HTML with per-word color highlighting based on attribution scores."""
+    if not word_attributions:
+        return text
+
+    # Build a mapping from word -> attribution score
+    attr_map = {w.lower(): s for w, s in word_attributions}
+
+    words = text.split()
+    highlighted_parts = []
+    for word in words:
+        # Look up score for this word (case-insensitive, strip punctuation)
+        clean = word.lower().strip(".,;:!?\"'()[]{}")
+        score = attr_map.get(clean, 0.0)
+
+        if abs(score) < 0.05:  # Below threshold — no highlight
+            highlighted_parts.append(word)
+        elif score > 0:  # AI indicator
+            intensity = min(0.6, abs(score) * 0.6)
+            highlighted_parts.append(
+                f'<span class="word-ai" style="--intensity: {intensity:.2f}">{word}</span>'
+            )
+        else:  # Human indicator
+            intensity = min(0.6, abs(score) * 0.6)
+            highlighted_parts.append(
+                f'<span class="word-human" style="--intensity: {intensity:.2f}">{word}</span>'
+            )
+    return " ".join(highlighted_parts)
+
+
 def render_sentence_highlighting(sentences: list[dict]):
-    """Render color-coded sentence-level analysis."""
+    """Render color-coded sentence-level analysis with word-level highlighting."""
     for i, s in enumerate(sentences):
         prob = s["ai_probability"]
         if prob > 0.6:
@@ -222,10 +291,27 @@ def render_sentence_highlighting(sentences: list[dict]):
             label = f"Uncertain ({prob:.0%})"
             icon = "🟡"
 
+        # Build word-level highlighted text
+        word_attrs = s.get("word_attributions", [])
+        highlighted_text = _highlight_words(s["text"], word_attrs)
+
+        # Build token indicator badges
+        token_html = ""
+        top_ai = s.get("top_ai_tokens", [])
+        top_human = s.get("top_human_tokens", [])
+        if top_ai or top_human:
+            badges = []
+            for w, score in top_ai[:3]:
+                badges.append(f'<span class="token-ai-badge">🔴 {w} ({score:+.2f})</span>')
+            for w, score in top_human[:3]:
+                badges.append(f'<span class="token-human-badge">🟢 {w} ({score:+.2f})</span>')
+            token_html = f'<div class="token-indicators">{" ".join(badges)}</div>'
+
         st.markdown(
             f'<div class="{css_class}">'
             f'<small><b>{icon} {label}</b> | PPL: {s["perplexity"]:.1f}</small><br/>'
-            f'{s["text"]}'
+            f'{highlighted_text}'
+            f'{token_html}'
             f'</div>',
             unsafe_allow_html=True,
         )
@@ -469,7 +555,8 @@ def main():
 
         # --- Sentence highlighting ---
         st.subheader("Sentence-Level Analysis")
-        st.caption("Each sentence is color-coded: 🟢 Human | 🟡 Uncertain | 🔴 AI")
+        st.caption("Each sentence is color-coded: 🟢 Human | 🟡 Uncertain | 🔴 AI. "
+                   "Individual words are highlighted by their attribution score.")
         if result["sentences"]:
             render_sentence_highlighting(result["sentences"])
         else:

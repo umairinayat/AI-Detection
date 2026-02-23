@@ -4,7 +4,8 @@ Ensemble Combiner — Aggregates signals from all detection components.
 GPTZero-inspired multi-component detection pipeline:
   - Perplexity (how predictable is the text?)
   - Burstiness (how variable is the perplexity across sentences?)
-  - Classifier (what does a fine-tuned DeBERTa say?)
+  - Classifier (what does a fine-tuned transformer say?)
+  - Token attribution (which words drive the AI/Human prediction?)
 
 Key improvements:
   - Dynamic weights based on classifier training status
@@ -91,6 +92,7 @@ class EnsembleDetector:
             sentences,
             ppl_result["sentence_ppls"],
             clf_result["sentence_ai_probs"],
+            clf_result.get("sentence_attributions", []),
         )
 
         # Step 5: Verdict + Confidence
@@ -137,16 +139,20 @@ class EnsembleDetector:
         sentences: list[str],
         sentence_ppls: list[float],
         sentence_clf_probs: list[float],
+        sentence_attributions: list[dict] | None = None,
     ) -> list[dict]:
         """
         Build per-sentence analysis for UI highlighting.
 
         Uses the SAME sigmoid mapping as the global perplexity score
-        for consistency.
+        for consistency. Now also includes token-level attribution data.
         """
         results = []
         clf_weight = 0.6 if self.classifier.is_fine_tuned else 0.0
         ppl_weight = 1.0 - clf_weight
+
+        if sentence_attributions is None:
+            sentence_attributions = []
 
         for i, sentence in enumerate(sentences):
             ppl = sentence_ppls[i] if i < len(sentence_ppls) else float("inf")
@@ -158,13 +164,26 @@ class EnsembleDetector:
             # Blend based on classifier availability
             sentence_ai_prob = ppl_weight * ppl_prob + clf_weight * clf_prob
 
-            results.append({
+            sentence_result = {
                 "text": sentence,
                 "perplexity": round(ppl, 2),
                 "ppl_ai_probability": round(ppl_prob, 4),
                 "classifier_prob": round(clf_prob, 4),
                 "ai_probability": round(sentence_ai_prob, 4),
-            })
+            }
+
+            # Attach token attribution data if available
+            if i < len(sentence_attributions):
+                attr = sentence_attributions[i]
+                sentence_result["word_attributions"] = attr.get("word_attributions", [])
+                sentence_result["top_ai_tokens"] = attr.get("top_ai_tokens", [])
+                sentence_result["top_human_tokens"] = attr.get("top_human_tokens", [])
+            else:
+                sentence_result["word_attributions"] = []
+                sentence_result["top_ai_tokens"] = []
+                sentence_result["top_human_tokens"] = []
+
+            results.append(sentence_result)
         return results
 
     def _determine_verdict(

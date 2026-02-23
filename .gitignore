@@ -25,6 +25,24 @@ venv/
 .DS_Store
 Thumbs.db
 
+# Logs
+*.log
+logs/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
 # Temp files
 tmpclaude-*
+tmp*/
 .skills/
+
+# Pytest / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Type checking
+.mypy_cache/
+.ruff_cache/
