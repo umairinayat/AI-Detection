@@ -1,0 +1,581 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AI Text Detector</title>
+  <style>
+    /* ── Reset & Base ───────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:          #0f1117;
+      --surface:     #1a1d27;
+      --surface2:    #22263a;
+      --border:      #2e3350;
+      --accent:      #6c63ff;
+      --accent-glow: rgba(108, 99, 255, 0.35);
+      --ai-color:    #ff5c5c;
+      --ai-glow:     rgba(255, 92, 92, 0.25);
+      --hu-color:    #3dd68c;
+      --hu-glow:     rgba(61, 214, 140, 0.25);
+      --mix-color:   #f5a623;
+      --text:        #e2e4f0;
+      --muted:       #7a7f9a;
+      --radius:      12px;
+      --font:        'Inter', 'Segoe UI', system-ui, sans-serif;
+    }
+
+    body {
+      font-family: var(--font);
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 2rem 1rem 4rem;
+    }
+
+    /* ── Header ─────────────────────────────────────────── */
+    header {
+      text-align: center;
+      margin-bottom: 2.5rem;
+      max-width: 720px;
+      width: 100%;
+    }
+
+    .logo {
+      display: inline-flex;
+      align-items: center;
+      gap: .5rem;
+      font-size: 1.1rem;
+      font-weight: 600;
+      color: var(--accent);
+      letter-spacing: .05em;
+      text-transform: uppercase;
+      margin-bottom: .75rem;
+    }
+    .logo svg { width: 22px; height: 22px; }
+
+    h1 {
+      font-size: clamp(1.8rem, 5vw, 2.6rem);
+      font-weight: 800;
+      letter-spacing: -.02em;
+      line-height: 1.2;
+      background: linear-gradient(135deg, #fff 40%, #6c63ff);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      margin-bottom: .6rem;
+    }
+
+    .subtitle {
+      color: var(--muted);
+      font-size: .95rem;
+      line-height: 1.6;
+    }
+
+    /* ── Main card ──────────────────────────────────────── */
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 1.75rem;
+      width: 100%;
+      max-width: 860px;
+    }
+
+    /* ── Input area ─────────────────────────────────────── */
+    .input-label {
+      font-size: .8rem;
+      font-weight: 600;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: .06em;
+      margin-bottom: .5rem;
+    }
+
+    textarea {
+      width: 100%;
+      min-height: 200px;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text);
+      font-family: var(--font);
+      font-size: .95rem;
+      line-height: 1.7;
+      padding: 1rem 1.1rem;
+      resize: vertical;
+      outline: none;
+      transition: border-color .2s;
+    }
+    textarea:focus { border-color: var(--accent); }
+    textarea::placeholder { color: var(--muted); }
+
+    .input-footer {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-top: .6rem;
+      flex-wrap: wrap;
+      gap: .5rem;
+    }
+
+    #charCount { font-size: .8rem; color: var(--muted); }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: .45rem;
+      padding: .65rem 1.6rem;
+      border-radius: 8px;
+      font-size: .9rem;
+      font-weight: 600;
+      cursor: pointer;
+      border: none;
+      transition: opacity .2s, transform .1s;
+    }
+    .btn:active { transform: scale(.97); }
+    .btn:disabled { opacity: .5; cursor: not-allowed; }
+
+    .btn-primary {
+      background: var(--accent);
+      color: #fff;
+      box-shadow: 0 0 20px var(--accent-glow);
+    }
+    .btn-primary:not(:disabled):hover { opacity: .88; }
+
+    .btn-ghost {
+      background: var(--surface2);
+      color: var(--muted);
+      border: 1px solid var(--border);
+    }
+    .btn-ghost:hover { color: var(--text); }
+
+    /* ── Loading spinner ────────────────────────────────── */
+    .spinner {
+      width: 18px; height: 18px;
+      border: 2.5px solid rgba(255,255,255,.25);
+      border-top-color: #fff;
+      border-radius: 50%;
+      animation: spin .7s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── Divider ────────────────────────────────────────── */
+    .divider {
+      height: 1px;
+      background: var(--border);
+      margin: 1.75rem 0;
+    }
+
+    /* ── Score summary ──────────────────────────────────── */
+    #results { display: none; }
+
+    .scores-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1rem;
+      margin-bottom: 1.5rem;
+    }
+
+    .score-card {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 1.2rem 1.4rem;
+      text-align: center;
+      position: relative;
+      overflow: hidden;
+    }
+    .score-card::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      opacity: .07;
+      pointer-events: none;
+    }
+    .score-card.ai-card::before  { background: var(--ai-color); }
+    .score-card.hu-card::before  { background: var(--hu-color); }
+
+    .score-label {
+      font-size: .75rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: .07em;
+      margin-bottom: .4rem;
+    }
+    .ai-card  .score-label { color: var(--ai-color); }
+    .hu-card  .score-label { color: var(--hu-color); }
+
+    .score-value {
+      font-size: 2.2rem;
+      font-weight: 800;
+      letter-spacing: -.02em;
+    }
+    .ai-card  .score-value { color: var(--ai-color); }
+    .hu-card  .score-value { color: var(--hu-color); }
+
+    .score-unit { font-size: 1rem; font-weight: 500; opacity: .7; }
+
+    /* ── Progress bar ───────────────────────────────────── */
+    .progress-wrap {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 1rem 1.25rem;
+      margin-bottom: 1.5rem;
+    }
+    .progress-label {
+      display: flex;
+      justify-content: space-between;
+      font-size: .78rem;
+      color: var(--muted);
+      margin-bottom: .5rem;
+    }
+    .progress-bar-bg {
+      height: 10px;
+      border-radius: 99px;
+      background: var(--border);
+      overflow: hidden;
+    }
+    .progress-bar-fill {
+      height: 100%;
+      border-radius: 99px;
+      background: linear-gradient(90deg, var(--hu-color), var(--ai-color));
+      transition: width .8s cubic-bezier(.4,0,.2,1);
+    }
+
+    /* ── Sentence section ───────────────────────────────── */
+    .section-title {
+      font-size: .8rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: .07em;
+      color: var(--muted);
+      margin-bottom: 1rem;
+      display: flex;
+      align-items: center;
+      gap: .5rem;
+    }
+    .section-title span {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 99px;
+      padding: .15rem .55rem;
+      font-size: .72rem;
+    }
+
+    .sentences-list { display: flex; flex-direction: column; gap: .6rem; }
+
+    .sentence-item {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: .75rem;
+      align-items: start;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: .85rem 1rem;
+      transition: border-color .2s;
+    }
+    .sentence-item:hover { border-color: #3e4464; }
+
+    .sentence-text {
+      font-size: .9rem;
+      line-height: 1.65;
+      color: var(--text);
+      word-break: break-word;
+    }
+
+    .sentence-badge {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-end;
+      gap: .3rem;
+      min-width: 68px;
+    }
+
+    .badge-pct {
+      font-size: .9rem;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .mini-bar-bg {
+      width: 68px; height: 5px;
+      border-radius: 99px;
+      background: var(--border);
+      overflow: hidden;
+    }
+    .mini-bar-fill {
+      height: 100%;
+      border-radius: 99px;
+      transition: width .5s ease;
+    }
+
+    .badge-label {
+      font-size: .65rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: .06em;
+      opacity: .7;
+    }
+
+    /* colour helpers */
+    .c-ai   { color: var(--ai-color); }
+    .c-hu   { color: var(--hu-color); }
+    .c-mix  { color: var(--mix-color); }
+    .bg-ai  { background: var(--ai-color); }
+    .bg-hu  { background: var(--hu-color); }
+    .bg-mix { background: var(--mix-color); }
+
+    /* ── Error ──────────────────────────────────────────── */
+    .error-box {
+      background: rgba(255, 92, 92, .1);
+      border: 1px solid rgba(255, 92, 92, .35);
+      border-radius: 8px;
+      padding: .85rem 1rem;
+      color: #ff8080;
+      font-size: .88rem;
+      display: none;
+      margin-top: 1rem;
+    }
+
+    /* ── Responsive ─────────────────────────────────────── */
+    @media (max-width: 480px) {
+      .scores-grid { grid-template-columns: 1fr; }
+      .score-value { font-size: 1.8rem; }
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <div class="logo">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
+      <path d="M11 8v6M8 11h6"/>
+    </svg>
+    LLM Detector
+  </div>
+  <h1>AI Text Detection</h1>
+  <p class="subtitle">
+    Powered by <strong>umairinayat/llm_detector</strong> (Qwen2.5-3B + LoRA).<br/>
+    Paste any text to get sentence-level and overall AI probability scores.
+  </p>
+</header>
+
+<div class="card">
+  <!-- Input -->
+  <div class="input-label">Paste or type your text</div>
+  <textarea
+    id="inputText"
+    placeholder="Enter text to analyse — essays, articles, emails, code comments…"
+    spellcheck="false"
+  ></textarea>
+
+  <div class="input-footer">
+    <span id="charCount">0 characters</span>
+    <div style="display:flex;gap:.6rem">
+      <button class="btn btn-ghost" id="clearBtn">Clear</button>
+      <button class="btn btn-primary" id="analyseBtn">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none"
+             stroke="currentColor" stroke-width="2.5">
+          <path d="M5 12h14M12 5l7 7-7 7"/>
+        </svg>
+        Analyse
+      </button>
+    </div>
+  </div>
+
+  <div class="error-box" id="errorBox"></div>
+
+  <!-- Results (hidden until first run) -->
+  <div id="results">
+    <div class="divider"></div>
+
+    <!-- Overall scores -->
+    <div class="scores-grid">
+      <div class="score-card ai-card">
+        <div class="score-label">AI Generated</div>
+        <div class="score-value" id="aiScore">—</div>
+        <div style="font-size:.75rem;color:var(--muted);margin-top:.3rem">overall probability</div>
+      </div>
+      <div class="score-card hu-card">
+        <div class="score-label">Human Written</div>
+        <div class="score-value" id="huScore">—</div>
+        <div style="font-size:.75rem;color:var(--muted);margin-top:.3rem">overall probability</div>
+      </div>
+    </div>
+
+    <!-- Gradient bar -->
+    <div class="progress-wrap">
+      <div class="progress-label">
+        <span style="color:var(--hu-color)">Human</span>
+        <span id="barLabel" style="color:var(--muted)">—</span>
+        <span style="color:var(--ai-color)">AI</span>
+      </div>
+      <div class="progress-bar-bg">
+        <div class="progress-bar-fill" id="progressFill" style="width:0%"></div>
+      </div>
+    </div>
+
+    <!-- Sentences -->
+    <div class="section-title">
+      Sentence breakdown
+      <span id="sentenceCount">0 sentences</span>
+    </div>
+    <div class="sentences-list" id="sentencesList"></div>
+  </div>
+</div>
+
+<script>
+const API = '/detect';
+
+const inputEl    = document.getElementById('inputText');
+const charCount  = document.getElementById('charCount');
+const analyseBtn = document.getElementById('analyseBtn');
+const clearBtn   = document.getElementById('clearBtn');
+const results    = document.getElementById('results');
+const errorBox   = document.getElementById('errorBox');
+
+const aiScoreEl      = document.getElementById('aiScore');
+const huScoreEl      = document.getElementById('huScore');
+const progressFill   = document.getElementById('progressFill');
+const barLabel       = document.getElementById('barLabel');
+const sentencesList  = document.getElementById('sentencesList');
+const sentenceCount  = document.getElementById('sentenceCount');
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+function scoreColor(pct) {
+  if (pct >= 70) return { text: 'c-ai',  bar: 'bg-ai',  label: 'AI'    };
+  if (pct >= 40) return { text: 'c-mix', bar: 'bg-mix', label: 'Mixed' };
+  return              { text: 'c-hu',  bar: 'bg-hu',  label: 'Human' };
+}
+
+function fmt(n) {
+  return n.toFixed(2) + '<span class="score-unit"> %</span>';
+}
+
+function showError(msg) {
+  errorBox.textContent = msg;
+  errorBox.style.display = 'block';
+}
+
+function hideError() {
+  errorBox.style.display = 'none';
+}
+
+function setLoading(on) {
+  analyseBtn.disabled = on;
+  analyseBtn.innerHTML = on
+    ? '<div class="spinner"></div> Analysing…'
+    : `<svg width="15" height="15" viewBox="0 0 24 24" fill="none"
+           stroke="currentColor" stroke-width="2.5">
+         <path d="M5 12h14M12 5l7 7-7 7"/>
+       </svg> Analyse`;
+}
+
+// ── Character counter ─────────────────────────────────────────────────────────
+inputEl.addEventListener('input', () => {
+  const n = inputEl.value.length;
+  charCount.textContent = n.toLocaleString() + ' character' + (n !== 1 ? 's' : '');
+});
+
+// ── Clear ─────────────────────────────────────────────────────────────────────
+clearBtn.addEventListener('click', () => {
+  inputEl.value = '';
+  charCount.textContent = '0 characters';
+  results.style.display = 'none';
+  hideError();
+});
+
+// ── Analyse ───────────────────────────────────────────────────────────────────
+analyseBtn.addEventListener('click', analyse);
+inputEl.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) analyse();
+});
+
+async function analyse() {
+  const text = inputEl.value.trim();
+  if (!text) { showError('Please enter some text first.'); return; }
+  hideError();
+  setLoading(true);
+  results.style.display = 'none';
+
+  try {
+    const resp = await fetch(API, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ text }),
+    });
+
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      throw new Error(err.detail || `HTTP ${resp.status}`);
+    }
+
+    const data = await resp.json();
+    renderResults(data);
+
+  } catch (err) {
+    showError('Error: ' + err.message);
+  } finally {
+    setLoading(false);
+  }
+}
+
+// ── Render ────────────────────────────────────────────────────────────────────
+function renderResults(data) {
+  const ai = data.scores.aioverall;
+  const hu = data.scores.humanoverall;
+  const sentences = data.sentences; // { text: pct }
+
+  // Overall scores
+  aiScoreEl.innerHTML = fmt(ai);
+  huScoreEl.innerHTML = fmt(hu);
+
+  // Progress bar
+  progressFill.style.width = ai + '%';
+  const col = scoreColor(ai);
+  barLabel.textContent = col.label + ' — ' + ai.toFixed(1) + '% AI';
+  barLabel.className   = col.text;
+
+  // Sentences
+  const keys = Object.keys(sentences);
+  sentenceCount.textContent = keys.length + ' sentence' + (keys.length !== 1 ? 's' : '');
+  sentencesList.innerHTML = '';
+
+  keys.forEach(sent => {
+    const pct = sentences[sent];
+    const c   = scoreColor(pct);
+
+    const item = document.createElement('div');
+    item.className = 'sentence-item';
+    item.innerHTML = `
+      <div class="sentence-text">${escHtml(sent)}</div>
+      <div class="sentence-badge">
+        <span class="badge-pct ${c.text}">${pct.toFixed(1)}%</span>
+        <div class="mini-bar-bg">
+          <div class="mini-bar-fill ${c.bar}" style="width:${pct}%"></div>
+        </div>
+        <span class="badge-label ${c.text}">${c.label}</span>
+      </div>`;
+    sentencesList.appendChild(item);
+  });
+
+  results.style.display = 'block';
+  results.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function escHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+          .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+</script>
+</body>
+</html>
