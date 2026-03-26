@@ -16,12 +16,14 @@ Usage:
 """
 
 from contextlib import asynccontextmanager
+
 from pathlib import Path
 
 from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.exceptions import RequestValidationError
+from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
 
 from detector.ensemble import EnsembleDetector
@@ -41,21 +43,21 @@ async def lifespan(app: FastAPI):
     print("=" * 60)
 
     try:
-        # Check for fine-tuned model
-        best_model = Path("models/detector/best")
-        if best_model.exists():
-            print(f"✓ Loading fine-tuned classifier from {best_model}")
-            detector = EnsembleDetector(classifier_path=str(best_model))
+        cp = config.CLASSIFIER_CHECKPOINT
+        if cp:
+            print(f"✓ Classifier checkpoint: {cp}")
+            if config.HF_MODEL_REVISION:
+                print(f"  - Hub revision (read-only): {config.HF_MODEL_REVISION[:12]}…")
         else:
-            print("⚠ No fine-tuned model found, using base models")
-            detector = EnsembleDetector()
+            print("⚠ No classifier checkpoint; using base RoBERTa detector")
+        detector = EnsembleDetector()
 
         # Set global detector instance
         set_detector(detector)
 
         print("✓ Detector loaded successfully")
         print(f"  - Perplexity model: {config.PERPLEXITY_MODEL}")
-        print(f"  - Classifier model: {config.CLASSIFIER_MODEL}")
+        print(f"  - Classifier model: {config.CLASSIFIER_CHECKPOINT or config.CLASSIFIER_MODEL}")
         print(f"  - Classifier trained: {detector.classifier.is_fine_tuned}")
         print(f"  - Ensemble weights: {detector.weights}")
         print("=" * 60)
@@ -158,6 +160,11 @@ async def general_exception_handler(request: Request, exc: Exception):
 
 # Include API routes
 app.include_router(router)
+
+# Mount frontend UI at /app/ so it can call /api/v1/analyze same-origin
+_frontend_dir = Path(__file__).resolve().parent / "frontend"
+if _frontend_dir.exists():
+    app.mount("/app", StaticFiles(directory=str(_frontend_dir), html=True), name="frontend")
 
 
 # Root endpoint

@@ -160,7 +160,7 @@ def load_raid(max_samples: int = 50000) -> Optional[Dataset]:
     except Exception:
         try:
             # Try alternative loading
-            ds = load_dataset("liamdugan/raid", "generation", split="train")
+            ds = load_dataset("liamdugan/raid", "raid", split="train")
         except Exception as e:
             print(f"[RAID] ERROR: Could not load dataset: {e}")
             print("[RAID] Try: pip install datasets --upgrade")
@@ -173,14 +173,15 @@ def load_raid(max_samples: int = 50000) -> Optional[Dataset]:
     texts, labels = [], []
 
     for row in ds:
-        text = row.get("generation") or row.get("text") or row.get("output", "")
+        text = row.get("text", "")
         if not isinstance(text, str) or len(text.strip()) < 50:
             continue
 
-        # Determine label from the dataset
-        # RAID typically has a 'model' column: "human" or model name
         model = row.get("model", "")
-        if model == "human" or row.get("label", -1) == 0:
+        # In RAID, label 0 is usually human or the model is "human"
+        is_human = (model == "human" or str(row.get("label", "")) == "0")
+        
+        if is_human:
             labels.append(0)
         else:
             labels.append(1)
@@ -210,14 +211,14 @@ def load_ai_text_pile(max_samples: int = 50000) -> Optional[Dataset]:
 
     texts, labels = [], []
 
+    human_count = 0
+    ai_count = 0
+
     for row in ds:
         text = row.get("text", "")
         if not isinstance(text, str) or len(text.strip()) < 50:
             continue
 
-        # Determine label from source column
-        # AI-Pile sources: wikipedia, reddit, arxiv etc. are human
-        # AI sources contain keywords like 'gpt', 'llama', 'chatgpt', etc.
         source = row.get("source", "").lower()
         label = row.get("label", row.get("generated", None))
         
@@ -226,7 +227,6 @@ def load_ai_text_pile(max_samples: int = 50000) -> Optional[Dataset]:
                 label = 1 if label.lower() in ["ai", "generated", "1", "true", "machine"] else 0
             label = int(label)
         else:
-            # Classify by source name
             ai_keywords = ["gpt", "chatgpt", "llama", "palm", "gemini", "claude",
                            "cohere", "bloom", "falcon", "mistral", "generated",
                            "ai", "synthetic", "machine"]
@@ -238,13 +238,18 @@ def load_ai_text_pile(max_samples: int = 50000) -> Optional[Dataset]:
             elif any(kw in source for kw in human_keywords):
                 label = 0
             else:
-                # Unknown source — skip to be safe
                 continue
 
-        labels.append(label)
-        texts.append(text.strip())
+        if label == 0 and human_count < max_samples:
+            labels.append(0)
+            texts.append(text.strip())
+            human_count += 1
+        elif label == 1 and ai_count < max_samples:
+            labels.append(1)
+            texts.append(text.strip())
+            ai_count += 1
 
-        if len(texts) >= max_samples * 2:
+        if human_count >= max_samples and ai_count >= max_samples:
             break
 
     return _balance_and_create(texts, labels, max_samples, "AI-Pile")
@@ -378,11 +383,11 @@ def load_shankar(max_samples: int = 100000) -> Optional[Dataset]:
         text = row.get("text") or row.get("content") or ""
         if not isinstance(text, str) or len(text.strip()) < 50:
             continue
-        raw = row.get("label") or row.get("generated") or row.get("class", "")
+        raw = row.get("label") or row.get("generated") or row.get("class") or row.get("model", "")
         if isinstance(raw, int):
             label = raw
         elif isinstance(raw, str):
-            label = 1 if any(k in raw.lower() for k in ["ai", "gpt", "generat", "machine", "llm"]) else 0
+            label = 0 if raw.lower() in ["human", "0"] else 1
         else:
             continue
         texts.append(text.strip())
@@ -441,11 +446,11 @@ def load_semeval(max_samples: int = 50000) -> Optional[Dataset]:
                 text = row.get("text") or row.get("content") or ""
                 if not isinstance(text, str) or len(text.strip()) < 50:
                     continue
-                raw = row.get("label") or row.get("generated") or ""
+                raw = row.get("label") or row.get("generated") or row.get("model", "")
                 if isinstance(raw, int):
                     label = raw
                 elif isinstance(raw, str):
-                    label = 1 if raw.lower() not in ["human", "0"] else 0
+                    label = 0 if raw.lower() in ["human", "0"] else 1
                 else:
                     continue
                 texts.append(text.strip())
@@ -476,19 +481,18 @@ def load_m4(max_samples: int = 100000) -> Optional[Dataset]:
 
     for row in ds:
         # Human text
-        human_text = row.get("article") or row.get("text") or row.get("human_text") or ""
+        human_text = row.get("Human_story") or row.get("article") or row.get("text") or row.get("human_text") or ""
         if isinstance(human_text, str) and len(human_text.strip()) > 50:
             texts.append(human_text.strip())
             labels.append(0)
 
-        # AI-generated versions: any column containing 'generated' or model names
+        # AI-generated versions
         for key, val in row.items():
-            if key in ("article", "text", "human_text", "title", "url", "date", "label"):
+            if key in ("article", "text", "human_text", "title", "url", "date", "label", "prompt", "Human_story"):
                 continue
             if isinstance(val, str) and len(val.strip()) > 50:
-                if any(k in key.lower() for k in ["gen", "gpt", "llm", "llama", "qwen", "mistral", "ai"]):
-                    texts.append(val.strip())
-                    labels.append(1)
+                texts.append(val.strip())
+                labels.append(1)
 
     return _balance_and_create(texts, labels, max_samples // 2, "NYT-LLM")
 
@@ -507,11 +511,11 @@ def load_essays(max_samples: int = 30000) -> Optional[Dataset]:
                 text = row.get("text") or row.get("content") or ""
                 if not isinstance(text, str) or len(text.strip()) < 50:
                     continue
-                raw = row.get("label") or row.get("generated") or ""
+                raw = row.get("label") or row.get("generated") or row.get("model", "")
                 if isinstance(raw, int):
                     label = raw
                 elif isinstance(raw, str):
-                    label = 1 if raw.lower() not in ["human", "0"] else 0
+                    label = 0 if raw.lower() in ["human", "0"] else 1
                 else:
                     continue
                 texts.append(text.strip())
@@ -565,7 +569,6 @@ def prepare_combined_dataset(
     include_raid: bool = True,
     include_ai_pile: bool = True,
     include_gptwiki: bool = True,
-    include_mixed: bool = True,
     include_new: bool = True,
 ) -> dict:
     """
@@ -576,7 +579,6 @@ def prepare_combined_dataset(
         include_raid: Whether to download RAID benchmark
         include_ai_pile: Whether to download AI text pile
         include_gptwiki: Whether to download GPT-wiki-intro
-        include_mixed: Whether to generate mixed-content samples
 
     Returns:
         dict with "train" and "test" Dataset objects.
@@ -665,12 +667,6 @@ def prepare_combined_dataset(
         if essays is not None:
             datasets_list.append(essays)
             _collect_texts(essays, all_human_texts, all_ai_texts)
-
-    # --- Mixed content generation ---
-    if include_mixed and all_human_texts and all_ai_texts:
-        mixed = generate_mixed_samples(all_human_texts, all_ai_texts, num_samples=5000)
-        if mixed is not None:
-            datasets_list.append(mixed)
 
     if not datasets_list:
         print("ERROR: No datasets could be loaded. Check your internet connection.")
@@ -767,7 +763,6 @@ if __name__ == "__main__":
             include_raid=False,
             include_ai_pile=False,
             include_gptwiki=False,
-            include_mixed=False,
             include_new=False,
         )
     else:
@@ -775,6 +770,5 @@ if __name__ == "__main__":
             include_raid=not args.no_raid,
             include_ai_pile=not args.no_pile,
             include_gptwiki=not args.no_gptwiki,
-            include_mixed=not args.no_mixed,
             include_new=not args.no_new,
         )

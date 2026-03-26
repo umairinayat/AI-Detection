@@ -21,6 +21,15 @@ import config
 from detector.token_attribution import TokenAttributor
 
 
+def _hub_revision(path: str) -> str | None:
+    """Use HF_MODEL_REVISION when loading from Hub (repo id), not for local dirs."""
+    from pathlib import Path
+
+    if "/" in path and not Path(path).exists():
+        return config.HF_MODEL_REVISION
+    return None
+
+
 def _is_peft_checkpoint(path: str) -> bool:
     """Check if a checkpoint is a PEFT/LoRA adapter checkpoint (local or HF Hub)."""
     from pathlib import Path
@@ -31,7 +40,12 @@ def _is_peft_checkpoint(path: str) -> bool:
     if "/" in path and not Path(path).exists():
         try:
             from huggingface_hub import hf_hub_download
-            hf_hub_download(repo_id=path, filename="adapter_config.json")
+
+            kwargs: dict = {"repo_id": path, "filename": "adapter_config.json"}
+            rev = _hub_revision(path)
+            if rev:
+                kwargs["revision"] = rev
+            hf_hub_download(**kwargs)
             return True
         except Exception:
             return False
@@ -55,12 +69,16 @@ class TextClassifier:
 
         if resolved_path and _is_peft_checkpoint(resolved_path):
             # ── LLM QLoRA checkpoint ─────────────────────────────────────
+            _rev = _hub_revision(resolved_path)
+            _rev_kw = {"revision": _rev} if _rev else {}
             print(f"Loading fine-tuned LLM classifier (QLoRA) from {resolved_path}...")
+            if _rev:
+                print(f"  (Hub revision {_rev[:12]}… — read-only, no upload)")
             try:
                 from peft import PeftModel, PeftConfig
                 from transformers import BitsAndBytesConfig
 
-                peft_cfg = PeftConfig.from_pretrained(resolved_path)
+                peft_cfg = PeftConfig.from_pretrained(resolved_path, **_rev_kw)
                 base_model_name = peft_cfg.base_model_name_or_path
 
                 bnb_config = BitsAndBytesConfig(
@@ -76,8 +94,12 @@ class TextClassifier:
                     device_map="auto",
                     trust_remote_code=True,
                 )
-                self.model = PeftModel.from_pretrained(base_model, resolved_path)
-                self.tokenizer = AutoTokenizer.from_pretrained(resolved_path, trust_remote_code=True)
+                self.model = PeftModel.from_pretrained(
+                    base_model, resolved_path, **_rev_kw
+                )
+                self.tokenizer = AutoTokenizer.from_pretrained(
+                    resolved_path, trust_remote_code=True, **_rev_kw
+                )
                 if self.tokenizer.pad_token is None:
                     self.tokenizer.pad_token = self.tokenizer.eos_token
                 if self.model.config.pad_token_id is None:
@@ -236,43 +258,67 @@ class TextClassifier:
 
         return all_probs
 
+    def _contextual_inputs(self, sentences: list[str]) -> list[str]:
+        """
+        Build contextual input for each sentence: prev + sentence + next.
+
+        Passing surrounding context helps the model distinguish AI sentences
+        that happen to use casual language, and human sentences in formal text.
+        This is the same technique GPTZero uses for per-sentence scoring.
+        """
+        inputs = []
+        for i, sent in enumerate(sentences):
+            prev = sentences[i - 1] if i > 0 else ""
+            nxt  = sentences[i + 1] if i < len(sentences) - 1 else ""
+            ctx  = " ".join(filter(None, [prev, sent, nxt]))
+            inputs.append(ctx)
+        return inputs
+
     def score_text(self, text: str, sentences: list[str]) -> dict:
         """
-        Full classification analysis with token-level attribution.
+        GPTZero-style scoring: score each sentence with context, then
+        derive the document score as a length-weighted mean of sentence scores.
 
         Returns dict with:
-            - document_ai_prob: AI probability for the full text
-            - sentence_ai_probs: per-sentence AI probabilities
-            - ai_probability: the document-level score (used by ensemble)
-            - is_fine_tuned: whether the model is actually trained
+            - document_ai_prob: length-weighted mean of sentence scores
+            - sentence_ai_probs: per-sentence AI probabilities [0, 1]
+            - ai_probability: same as document_ai_prob (used by ensemble)
+            - is_fine_tuned: whether a fine-tuned checkpoint is loaded
             - sentence_attributions: per-sentence token attribution data
         """
-        document_ai_prob = self.predict_single(text)
+        _empty_attr = {
+            "word_attributions": [],
+            "top_ai_tokens": [],
+            "top_human_tokens": [],
+            "predicted_class": -1,
+            "predicted_prob": 0.5,
+        }
 
-        # Per-sentence: use batch prediction for efficiency
-        if self._is_fine_tuned:
-            sentence_ai_probs = self.predict_batch(sentences)
-        else:
-            sentence_ai_probs = [0.5] * len(sentences)
+        if not self._is_fine_tuned or not sentences:
+            return {
+                "document_ai_prob": 0.5,
+                "sentence_ai_probs": [0.5] * len(sentences),
+                "ai_probability": 0.5,
+                "is_fine_tuned": self._is_fine_tuned,
+                "sentence_attributions": [_empty_attr.copy() for _ in sentences],
+            }
 
-        # Compute token-level attributions per sentence
-        sentence_attributions = []
+        # Score each sentence with surrounding context (GPTZero-style)
+        contextual = self._contextual_inputs(sentences)
+        sentence_ai_probs = self.predict_batch(contextual)
+
+        # Document score = length-weighted mean of sentence scores.
+        # Longer sentences carry more signal than short fragments.
+        weights = [max(len(s.split()), 1) for s in sentences]
+        total_w = sum(weights)
+        document_ai_prob = sum(p * w for p, w in zip(sentence_ai_probs, weights)) / total_w
+
+        # Token-level attributions (run on raw sentences, not contextual inputs,
+        # so highlighting aligns with the displayed sentence text)
         if self._is_fine_tuned and sentences:
-            sentence_attributions = self.attributor.compute_batch_attributions(
-                sentences
-            )
+            sentence_attributions = self.attributor.compute_batch_attributions(sentences)
         else:
-            # Return empty attributions for each sentence
-            sentence_attributions = [
-                {
-                    "word_attributions": [],
-                    "top_ai_tokens": [],
-                    "top_human_tokens": [],
-                    "predicted_class": -1,
-                    "predicted_prob": 0.5,
-                }
-                for _ in sentences
-            ]
+            sentence_attributions = [_empty_attr.copy() for _ in sentences]
 
         return {
             "document_ai_prob": document_ai_prob,

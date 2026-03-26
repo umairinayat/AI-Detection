@@ -34,14 +34,12 @@ class DetailedAnalyzer:
     """Enhanced analyzer with explanations."""
 
     def __init__(self):
-        """Initialize the detector with best available model."""
-        best_model = Path("models/detector/best")
-        if best_model.exists():
-            print("✓ Loading fine-tuned classifier...")
-            self.detector = EnsembleDetector(classifier_path=str(best_model))
+        """Initialize the detector with best available model (see config / .env)."""
+        if config.CLASSIFIER_CHECKPOINT:
+            print(f"✓ Classifier checkpoint: {config.CLASSIFIER_CHECKPOINT}")
         else:
-            print("⚠ No fine-tuned model found, using base models")
-            self.detector = EnsembleDetector()
+            print("⚠ No fine-tuned checkpoint; using base RoBERTa")
+        self.detector = EnsembleDetector()
 
         self.perplexity_engine = PerplexityEngine()
 

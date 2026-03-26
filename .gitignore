@@ -13,6 +13,7 @@ build/
 
 # Environment
 .env
+.api_keys.json
 venv/
 .venv/
 

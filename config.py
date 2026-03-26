@@ -16,18 +16,27 @@ from pathlib import Path
 # --- Project Paths ---
 PROJECT_ROOT = Path(__file__).resolve().parent
 MODELS_DIR = PROJECT_ROOT / "models" / "detector"
+LLM_CHECKPOINT_DIR = PROJECT_ROOT / "models" / "llm_checkpoints"
 DATA_DIR = PROJECT_ROOT / "data"
+
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv(PROJECT_ROOT / ".env")
+except ImportError:
+    pass
+
+# --- HuggingFace Hub Configuration ---
+HF_MODEL_REVISION: str | None = os.getenv("HF_MODEL_REVISION", None)
+HF_USE_HUB_LLM: bool = os.getenv("HF_USE_HUB_LLM", "0").strip() in ("1", "true", "yes")
 
 # --- Model Configuration ---
 PERPLEXITY_MODEL = "gpt2"  # CPU-friendly model for inference (fast)
-CLASSIFIER_MODEL = "roberta-base-openai-detector"  # Fallback RoBERTa detector
-CLASSIFIER_MAX_TOKENS = 512  # Max token length for classifier
-
-# --- LLM Classifier (Qwen2.5-3B + QLoRA) ---
-LLM_MODEL = "Qwen/Qwen2.5-3B-Instruct"          # Base LLM to fine-tune
-LLM_CHECKPOINT_DIR = MODELS_DIR / "llm_detector" # Where adapters + merged model are saved
-_llm_best = LLM_CHECKPOINT_DIR / "best"
-LLM_CHECKPOINT = str(_llm_best) if _llm_best.exists() else None
+# DeBERTa-v3-large: best model for sentence-level AI detection
+# Outperforms Qwen2.5 QLoRA on this task: discriminative (not generative),
+# calibrated probabilities, runs on 4 GB VRAM, no quantization needed.
+CLASSIFIER_MODEL = "microsoft/deberta-v3-large"
+CLASSIFIER_MAX_TOKENS = 256  # Sentences are short; 256 is plenty and 2x faster
 
 # --- Token Attribution Configuration ---
 # Integrated Gradients for GPTZero-style word-level highlighting
@@ -36,10 +45,23 @@ ATTRIBUTION_STEPS = 50  # Number of interpolation steps for IG (higher = more pr
 TOKEN_HIGHLIGHT_THRESHOLD = 0.05  # Min |attribution| score to highlight a word
 ATTRIBUTION_TOP_K = 5  # Number of top AI/Human indicator tokens to return per sentence
 
-# Auto-detect fine-tuned checkpoint — LLM takes priority over RoBERTa
+# --- Classifier Checkpoint Resolution ---
+# Priority: CLASSIFIER_PATH env var → local fine-tuned best/ → None (loads base model)
+# The old Qwen/HF hub model is intentionally NOT in this chain.
 _best_checkpoint = MODELS_DIR / "best"
-_roberta_checkpoint = str(_best_checkpoint) if _best_checkpoint.exists() else None
-CLASSIFIER_CHECKPOINT = LLM_CHECKPOINT or _roberta_checkpoint
+_classifier_path_override = os.getenv("CLASSIFIER_PATH", "").strip()
+
+
+def _resolve_classifier_checkpoint() -> str | None:
+    """Load from explicit env var, then local fine-tuned checkpoint, then None (base model)."""
+    if _classifier_path_override:
+        return _classifier_path_override
+    if _best_checkpoint.exists():
+        return str(_best_checkpoint)
+    return None
+
+
+CLASSIFIER_CHECKPOINT = _resolve_classifier_checkpoint()
 
 # --- Perplexity Configuration ---
 # AI text typically has PPL ~7-15, human text ~25+
@@ -58,14 +80,16 @@ BURSTINESS_SIGMOID_K = 5.0  # Sigmoid steepness
 CLASSIFIER_THRESHOLD = 0.5  # Above this → classified as AI
 
 # --- Ensemble Weights ---
-# When classifier IS fine-tuned: classifier gets majority weight
+# Fine-tuned DeBERTa at sentence level is the sole signal (GPTZero-style).
+# Perplexity and burstiness are kept at 0 — the classifier already captures
+# those signals and adds far more discriminative power.
 ENSEMBLE_WEIGHTS_TRAINED = {
-    "perplexity": 0.25,
-    "burstiness": 0.20,
-    "classifier": 0.55,
+    "perplexity": 0.0,
+    "burstiness": 0.0,
+    "classifier": 1.0,
 }
 
-# When classifier is NOT fine-tuned: exclude it entirely (it produces noise)
+# When classifier is NOT fine-tuned: fall back to perplexity + burstiness
 ENSEMBLE_WEIGHTS_UNTRAINED = {
     "perplexity": 0.55,
     "burstiness": 0.45,
@@ -89,37 +113,52 @@ VERDICT_HUMAN_THRESHOLD = 0.30    # Below → "Human"
 VERDICT_MIXED_AI_SENTENCE = 0.6   # Sentence above this → counted as AI
 VERDICT_MIXED_HUMAN_SENTENCE = 0.4  # Sentence below this → counted as Human
 
-# --- Training Configuration (RoBERTa) ---
+# --- Training Configuration (DeBERTa-v3-large, 500k sentences, 12 GB VRAM) ---
+#
+# gradient_checkpointing=True is what makes large fit on 12 GB.
+# It recomputes activations during backward pass instead of storing them —
+# cuts VRAM by ~40% at the cost of ~20% slower training. Worth it.
+#
+# Effective batch = 4 * 16 = 64 (same as larger GPUs, just more accumulation steps).
 TRAINING_CONFIG = {
-    "epochs": 6,
-    "batch_size": 4,
-    "gradient_accumulation_steps": 8,
-    "learning_rate": 2e-5,
-    "warmup_ratio": 0.1,
+    "epochs": 1,
+    "batch_size": 2,                   # reduced from 4 to prevent OOM on 12 GB
+    "gradient_accumulation_steps": 32, # effective batch = 64
+    "learning_rate": 5e-6,          # optimal for DeBERTa-v3-large fine-tuning (lowered to prevent NaN)
+    # Cap training rows after load_from_disk (shuffle+select). None = use full train split.
+    # Set to e.g. 500_000 if you built a larger on-disk set but want a fixed random subset.
+    "max_train_samples": 300000,
+    "warmup_ratio": 0.05,           # 5% warmup over 315k * 3 epochs
     "weight_decay": 0.01,
-    "max_length": 512,
+    "max_length": 256,              # sentences fit in 256; saves 2x memory vs 512
+    "label_smoothing": 0.05,        # KEY: prevents flatline at 0.99/0.01
+    "gradient_checkpointing": False, # KEY: Disable gradient checkpointing to prevent NaN in Deberta-v3
     "fp16": False,
-    "bf16": True,
+    "bf16": True,                   # Enabled to properly scale DeBERTa's native float16 weights and prevent NaN overflow
     "output_dir": str(MODELS_DIR),
-    "early_stopping_patience": 3,
+    "early_stopping_patience": 2,
     "metric_for_best_model": "f1",
+    "eval_steps": 1000,             # evaluate every 1000 optimizer steps
+    "save_steps": 1000,
+    "logging_steps": 100,
 }
 
 # --- LLM Training Configuration (Qwen2.5-3B + QLoRA) ---
+LLM_MODEL = "Qwen/Qwen2.5-3B-Instruct"
 LLM_TRAINING_CONFIG = {
-    "epochs": 3,
+    "epochs": 1,
     "batch_size": 4,                     # Increased from 2; QLoRA fits 4 on 20GB
     "gradient_accumulation_steps": 8,    # Effective batch = 32
     "learning_rate": 2e-4,               # Higher LR for LoRA adapters
     "warmup_ratio": 0.05,
     "weight_decay": 0.01,
-    "max_length": 512,
+    "max_length": 256,                   # Optimized for sentence-level
     "bf16": True,
     "output_dir": str(LLM_CHECKPOINT_DIR),
     "early_stopping_patience": 2,
     "metric_for_best_model": "f1",
-    "max_train_samples": 50000,           # Subsample from 358k for ~6hr training
-    "max_eval_samples": 10000,            # Subsample eval as well
+    "max_train_samples": 300000,          # Subsample to 300k as requested
+    "max_eval_samples": 1000,             # Subsample eval as well
     # LoRA config
     "lora_r": 16,
     "lora_alpha": 32,

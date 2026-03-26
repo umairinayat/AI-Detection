@@ -78,7 +78,7 @@ class WeightedTrainer(Trainer):
         logits = outputs.logits
 
         if self.class_weights is not None:
-            weights = self.class_weights.to(logits.device)
+            weights = self.class_weights.to(dtype=logits.dtype, device=logits.device)
             loss_fn = torch.nn.CrossEntropyLoss(weight=weights)
         else:
             loss_fn = torch.nn.CrossEntropyLoss()

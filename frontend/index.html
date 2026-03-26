@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AI Text Detector</title>
+  <link rel="stylesheet" href="/app/styles.css" />
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <h1>AI Text Detector</h1>
+      <p>Sentence-level results via the FastAPI backend (same origin as this page).</p>
+    </header>
+
+    <div class="panel">
+      <label for="api-key">API key</label>
+      <input type="password" id="api-key" autocomplete="off" placeholder="Paste X-API-Key (see server terminal on first run)" />
+      <div class="row">
+        <label class="inline"><input type="checkbox" id="remember-key" checked /> Remember in this browser</label>
+      </div>
+    </div>
+
+    <div class="panel">
+      <label for="text">Text to analyze</label>
+      <textarea id="text" placeholder="Paste text (up to 50,000 characters)…"></textarea>
+      <div class="row">
+        <label class="inline"><input type="checkbox" id="include-sentences" checked /> Include per-sentence scores</label>
+        <label class="inline"><input type="checkbox" id="include-metadata" checked /> Include metadata</label>
+        <button type="button" class="primary" id="analyze-btn">Analyze</button>
+      </div>
+      <div id="status"></div>
+      <div id="error" class="error"></div>
+    </div>
+
+    <div id="result" class="result hidden">
+      <div class="panel">
+        <div id="verdict" class="verdict"></div>
+        <div id="prob" class="prob-line"></div>
+        <div id="confidence" class="meta"></div>
+        <div id="components"></div>
+        <div class="sentences">
+          <h3>Sentence-level</h3>
+          <div id="sentence-list"></div>
+        </div>
+      </div>
+    </div>
+
+    <footer>
+      <a href="/docs">API docs</a> ·
+      <a href="/api/v1/health">Health</a> ·
+      OpenAPI JSON at <code>/openapi.json</code>
+    </footer>
+  </div>
+  <script src="/app/app.js"></script>
+</body>
+</html>

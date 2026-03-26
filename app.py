@@ -162,17 +162,7 @@ st.markdown("""
 
 @st.cache_resource
 def load_detector():
-    """Load the ensemble detector (cached across reruns)."""
-    # Prefer the newly trained llm_detector model
-    llm_best_model = Path("models/detector/llm_detector/best")
-    if llm_best_model.exists():
-        return EnsembleDetector(classifier_path=str(llm_best_model))
-    
-    # Fallback to the older path
-    best_model = Path("models/detector/best")
-    if best_model.exists():
-        return EnsembleDetector(classifier_path=str(best_model))
-        
+    """Load the ensemble detector (cached across reruns). Paths come from config (see .env.example)."""
     return EnsembleDetector()
 
 
