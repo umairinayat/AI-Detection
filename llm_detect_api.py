@@ -1,10 +1,10 @@
 """
 LLM Detector API
 ================
-FastAPI application that uses umairinayat/llm_detector (PEFT/LoRA on Qwen2.5-3B-Instruct)
+FastAPI application that uses umairinayat/qwen2.5-3b-ai-text-detector
 to detect AI-generated text at sentence level and overall.
 
-Runs on port 7000.
+Runs on port 7001.
 Serves the web frontend at /
 """
 
@@ -38,11 +38,14 @@ except LookupError:
 from nltk.tokenize import sent_tokenize
 
 # ── Configuration ────────────────────────────────────────────────────────────
-_LOCAL_MODEL   = Path(__file__).resolve().parent / "models" / "llm_detector"
-HF_MODEL_ID    = str(_LOCAL_MODEL) if _LOCAL_MODEL.exists() else "umairinayat/llm_detector"
+_LOCAL_MODEL   = Path(__file__).resolve().parent / "models" / "qwen2.5-3b-ai-text-detector"
+HF_MODEL_ID    = os.getenv(
+    "HF_MODEL_ID",
+    str(_LOCAL_MODEL) if _LOCAL_MODEL.exists() else "umairinayat/qwen2.5-3b-ai-text-detector",
+)
 HF_TOKEN       = os.getenv("HF_TOKEN", "")
 MAX_TOKEN_LEN  = 512
-BATCH_SIZE     = 4  # sentences per inference batch (CPU-friendly)
+BATCH_SIZE     = 4  # sentences per inference batch
 
 # ── Global model state ───────────────────────────────────────────────────────
 _model      = None
@@ -50,12 +53,29 @@ _tokenizer  = None
 _device     = None
 
 
+def _ensure_torch_set_submodule():
+    """Backport nn.Module.set_submodule for this PyTorch build."""
+    if hasattr(torch.nn.Module, "set_submodule"):
+        return
+
+    def set_submodule(self, target: str, module: torch.nn.Module):
+        if not target:
+            raise ValueError("Cannot set the root module")
+        atoms = target.split(".")
+        parent = self.get_submodule(".".join(atoms[:-1])) if len(atoms) > 1 else self
+        if not hasattr(parent, atoms[-1]):
+            raise AttributeError(parent._get_name() + " has no attribute `" + atoms[-1] + "`")
+        parent._modules[atoms[-1]] = module
+
+    torch.nn.Module.set_submodule = set_submodule
+
+
 def load_model():
     """
     Load the PEFT/LoRA classifier using AutoPeftModelForSequenceClassification.
 
-    On GPU  → 4-bit quantization via BitsAndBytes (fast, low VRAM).
-    On CPU  → float16 with low_cpu_mem_usage=True; the OS swap file handles
+    On GPU  -> 4-bit quantization via BitsAndBytes.
+    On CPU  -> float16 with low_cpu_mem_usage=True; the OS swap file handles
               any memory spill (slow but correct with ≥8 GB swap).
     """
     global _model, _tokenizer, _device
@@ -82,6 +102,7 @@ def load_model():
     )
 
     if torch.cuda.is_available():
+        _ensure_torch_set_submodule()
         from transformers import BitsAndBytesConfig
         bnb_cfg = BitsAndBytesConfig(
             load_in_4bit=True,
@@ -166,9 +187,13 @@ def _score_batch(texts: list[str]) -> list[float]:
     inputs = {k: v.to(_device) for k, v in inputs.items()}
 
     with torch.no_grad():
-        # quanto INT8 models compute in bfloat16; autocast aligns dtypes.
-        with torch.autocast(device_type="cpu", dtype=torch.bfloat16):
-            logits = _model(**inputs).logits           # shape (B, 2)
+        if _device.type == "cuda":
+            with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                logits = _model(**inputs).logits       # shape (B, 2)
+        else:
+            # quanto INT8 models compute in bfloat16; autocast aligns dtypes.
+            with torch.autocast(device_type="cpu", dtype=torch.bfloat16):
+                logits = _model(**inputs).logits       # shape (B, 2)
         probs  = F.softmax(logits.to(torch.float32), dim=-1)
         return probs[:, 1].cpu().tolist()              # index 1 = AI class
 
@@ -205,7 +230,7 @@ async def detect(request: DetectRequest):
 
     # Build sentence-level dict  { sentence_text: ai_percentage }
     sentence_scores: dict[str, float] = {
-        sent: round(prob * 100, 10)
+        sent: round(prob * 100, 4)
         for sent, prob in zip(sentences, probs)
     }
 
@@ -217,8 +242,8 @@ async def detect(request: DetectRequest):
         text=request.text,
         sentences=sentence_scores,
         scores={
-            "aioverall":    round(ai_overall,    10),
-            "humanoverall": round(human_overall, 10),
+            "aioverall":    round(ai_overall,    4),
+            "humanoverall": round(human_overall, 4),
         },
     )
 
@@ -248,7 +273,7 @@ if __name__ == "__main__":
     uvicorn.run(
         "llm_detect_api:app",
         host="0.0.0.0",
-        port=7000,
+        port=7001,
         reload=False,
         log_level="info",
     )

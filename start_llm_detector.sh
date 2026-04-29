@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ─────────────────────────────────────────────────────────────────────────────
-# Start the LLM Detector API on port 7000
-# Model: umairinayat/llm_detector (Qwen2.5-3B + LoRA, INT8 quantized on CPU)
+# Start the LLM Detector API on port 7001
+# Model: umairinayat/qwen2.5-3b-ai-text-detector
 # ─────────────────────────────────────────────────────────────────────────────
 set -e
 
@@ -19,27 +19,30 @@ if ! swapon --show | grep -q swapfile 2>/dev/null; then
   fi
 fi
 
+# ── Source HF token from .env ──────────────────────────────────────────────────
+if [ -f .env ]; then
+  set -a
+  source .env
+  set +a
+fi
+
 # ── Activate venv ─────────────────────────────────────────────────────────────
 source venv/bin/activate
 
-# ── Source HF token from .env ──────────────────────────────────────────────────
-if [ -f .env ]; then
-  export $(grep -v '^#' .env | xargs)
-fi
-
-# ── Kill any existing instance on port 7000 ───────────────────────────────────
-pkill -f "uvicorn.*7000" 2>/dev/null || true
+# ── Kill any existing instance on port 7001 ───────────────────────────────────
+pkill -f "uvicorn.*7001" 2>/dev/null || true
 sleep 1
 
 echo "──────────────────────────────────────────"
-echo "  Starting LLM Detector API on port 7000  "
-echo "  Frontend:  http://0.0.0.0:7000/         "
-echo "  Docs:      http://0.0.0.0:7000/docs     "
-echo "  Health:    http://0.0.0.0:7000/health   "
-echo "  NOTE: first request takes ~30 s (CPU)   "
+echo "  Starting LLM Detector API on port 7001  "
+echo "  Frontend:  http://0.0.0.0:7001/         "
+echo "  Docs:      http://0.0.0.0:7001/docs     "
+echo "  Health:    http://0.0.0.0:7001/health   "
+echo "  Public:    https://tymf2q87c8x8zm-7001.proxy.runpod.net/"
+echo "  GPU:       CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-all}"
 echo "──────────────────────────────────────────"
 
 uvicorn llm_detect_api:app \
   --host 0.0.0.0 \
-  --port 7000 \
+  --port 7001 \
   --log-level info
